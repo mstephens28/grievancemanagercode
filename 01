@@ -1,0 +1,1956 @@
+import datetime
+import io
+import json
+import pdfrw
+from pdfrw import PdfName
+import cryptography.hazmat.backends
+import cryptography.hazmat.primitives.asymmetric.padding as padding
+import cryptography.hazmat.primitives.hashes
+from cryptography.hazmat.backends import default_backend
+from cryptography.x509 import load_pem_x509_certificate
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives.asymmetric import padding
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.primitives import hashes, hmac
+from getpass import getpass
+from werkzeug.security import generate_password_hash, check_password_hash
+from flask import Flask, request, jsonify, make_response
+from flask_sqlalchemy import SQLAlchemy
+from flask_jwt_extended import JWTManager, jwt_required, create_access_token, get_jwt_identity
+import logging
+
+# Basic logging configuration
+logging.basicConfig(level=logging.INFO)
+
+app = Flask(__name__)
+
+# Sample database configuration for Flask-SQLAlchemy
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///site.db'
+db = SQLAlchemy(app)
+
+# Configuration for JWT
+app.config['JWT_SECRET_KEY'] = 'super-secret'  # Change this!
+jwt = JWTManager(app)
+
+
+class Role(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(50), unique=True, nullable=False)
+    permissions = db.relationship('Permission', secondary='role_permissions')
+
+
+class Permission(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(50), unique=True, nullable=False)
+
+
+class RolePermission(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    role_id = db.Column(db.Integer, db.ForeignKey('role.id'), nullable=False)
+    permission_id = db.Column(db.Integer, db.ForeignKey('permission.id'), nullable=False)
+
+
+class User(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(50), unique=True, nullable=False)
+    password_hash = db.Column(db.String(128))
+    role_id = db.Column(db.Integer, db.ForeignKey('role.id'), nullable=False)
+
+
+@app.route('/register', methods=['POST'])
+def register():
+    data = request.get_json()
+    username = data['username']
+    password = data['password']
+
+    hashed_pwd = generate_password_hash(password, method='sha256')
+    new_user = User(username=username, password_hash=hashed_pwd)
+    db.session.add(new_user)
+    db.session.commit()
+
+    return jsonify({"message": "User registered successfully!"})
+
+
+@app.route('/login', methods=['POST'])
+def login():
+    data = request.get_json()
+    username = data['username']
+    password = data['password']
+
+    user = User.query.filter_by(username=username).first()
+    if not user or not check_password_hash(user.password_hash, password):
+        return jsonify({"message": "Login failed!"}), 401
+
+    access_token = create_access_token(identity=username)
+    return jsonify(access_token=access_token)
+
+
+class ElectronicSignature:
+    def __init__(self, certificate_file, private_key_file):
+        with open(certificate_file, "rb") as f:
+            self.certificate = load_pem_x509_certificate(f.read(), default_backend())
+        with open(private_key_file, "rb") as f:
+            self.private_key = rsa.RSAPrivateKey.from_pem(f.read())
+
+    # ... [rest of the ElectronicSignature class methods]
+
+
+class NotificationSystem:
+    def notify(self, message):
+        logging.info(f"NOTIFICATION: {message}")
+
+
+class PDFMappingAndElectronicSignatureSystem:
+    # ... [rest of the PDFMappingAndElectronicSignatureSystem class]
+
+
+@app.route('/encrypt', methods=['POST'])
+@jwt_required
+def encrypt():
+    # ... [rest of the encryption function]
+
+
+@app.route('/decrypt', methods=['POST'])
+@jwt_required
+def decrypt():
+    # ... [rest of the decryption function]
+
+
+# ... [rest of the functions and classes]
+
+if __name__ == "__main__":
+    db.create_all()
+    app.run(debug=True)
+
+
+class Document(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    title = db.Column(db.String(200), nullable=False)
+    content = db.Column(db.Text, nullable=False)
+    owner_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    timestamp = db.Column(db.DateTime, index=True, default=datetime.utcnow)
+    is_encrypted = db.Column(db.Boolean, default=False)
+
+
+@app.route('/documents', methods=['GET'])
+@jwt_required
+def get_all_documents():
+    user = User.query.filter_by(username=get_jwt_identity()).first()
+    documents = Document.query.filter_by(owner_id=user.id).all()
+    return jsonify([doc.title for doc in documents])
+
+
+@app.route('/document/<int:document_id>', methods=['GET'])
+@jwt_required
+def get_single_document(document_id):
+    doc = Document.query.get(document_id)
+    if not doc:
+        return jsonify({"message": "Document not found!"}), 404
+
+    return jsonify({"title": doc.title, "content": doc.content, "timestamp": doc.timestamp})
+
+
+@app.route('/create_document', methods=['POST'])
+@jwt_required
+def create_document():
+    data = request.get_json()
+    title = data['title']
+    content = data['content']
+
+    user = User.query.filter_by(username=get_jwt_identity()).first()
+    new_doc = Document(title=title, content=content, owner_id=user.id)
+    
+    db.session.add(new_doc)
+    db.session.commit()
+    return jsonify({"message": "Document created successfully!"}), 201
+
+
+@app.route('/update_document/<int:document_id>', methods=['PUT'])
+@jwt_required
+def update_document(document_id):
+    doc = Document.query.get(document_id)
+    if not doc:
+        return jsonify({"message": "Document not found!"}), 404
+
+    data = request.get_json()
+    doc.title = data['title']
+    doc.content = data['content']
+
+    db.session.commit()
+    return jsonify({"message": "Document updated successfully!"})
+
+
+@app.route('/delete_document/<int:document_id>', methods=['DELETE'])
+@jwt_required
+def delete_document(document_id):
+    doc = Document.query.get(document_id)
+    if not doc:
+        return jsonify({"message": "Document not found!"}), 404
+
+    db.session.delete(doc)
+    db.session.commit()
+    return jsonify({"message": "Document deleted successfully!"})
+
+
+class SearchEngine:
+    def __init__(self):
+        # Sample code to initialize a search engine
+        pass
+
+    def index_document(self, doc):
+        # Index a document for search purposes
+        pass
+
+    def search_documents(self, query):
+        # Search indexed documents and return results
+        return []
+
+
+@app.route('/search', methods=['POST'])
+@jwt_required
+def search():
+    data = request.get_json()
+    query = data['query']
+
+    engine = SearchEngine()
+    results = engine.search_documents(query)
+    return jsonify(results)
+
+# ... [rest of the functions, classes, and routes]
+
+if __name__ == "__main__":
+    db.create_all()
+    app.run(debug=True)
+class Comment(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    content = db.Column(db.Text, nullable=False)
+    author_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    document_id = db.Column(db.Integer, db.ForeignKey('document.id'), nullable=False)
+    timestamp = db.Column(db.DateTime, index=True, default=datetime.utcnow)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "content": self.content,
+            "author": self.author.username,
+            "timestamp": self.timestamp
+        }
+
+
+@app.route('/document/<int:document_id>/comments', methods=['GET'])
+@jwt_required
+def get_comments_for_document(document_id):
+    doc = Document.query.get(document_id)
+    if not doc:
+        return jsonify({"message": "Document not found!"}), 404
+
+    comments = Comment.query.filter_by(document_id=document_id).all()
+    return jsonify([comment.to_dict() for comment in comments])
+
+
+@app.route('/document/<int:document_id>/comment', methods=['POST'])
+@jwt_required
+def add_comment_to_document(document_id):
+    doc = Document.query.get(document_id)
+    if not doc:
+        return jsonify({"message": "Document not found!"}), 404
+
+    data = request.get_json()
+    content = data['content']
+
+    user = User.query.filter_by(username=get_jwt_identity()).first()
+    new_comment = Comment(content=content, author_id=user.id, document_id=document_id)
+
+    db.session.add(new_comment)
+    db.session.commit()
+
+    return jsonify({"message": "Comment added successfully!"}), 201
+
+
+@app.route('/document/comment/<int:comment_id>', methods=['DELETE'])
+@jwt_required
+def delete_comment(comment_id):
+    comment = Comment.query.get(comment_id)
+    if not comment:
+        return jsonify({"message": "Comment not found!"}), 404
+
+    db.session.delete(comment)
+    db.session.commit()
+
+    return jsonify({"message": "Comment deleted successfully!"})
+
+
+class CollaborationEngine:
+    def __init__(self):
+        pass
+
+    def invite_collaborator(self, document_id, collaborator_email):
+        # Logic to invite a collaborator to edit/view a document
+        pass
+
+    def revoke_collaboration(self, document_id, collaborator_email):
+        # Logic to revoke a collaborator's access to a document
+        pass
+
+
+@app.route('/document/<int:document_id>/invite', methods=['POST'])
+@jwt_required
+def invite_collaborator(document_id):
+    doc = Document.query.get(document_id)
+    if not doc:
+        return jsonify({"message": "Document not found!"}), 404
+
+    data = request.get_json()
+    collaborator_email = data['email']
+
+    engine = CollaborationEngine()
+    engine.invite_collaborator(document_id, collaborator_email)
+
+    return jsonify({"message": f"Collaborator {collaborator_email} invited successfully!"})
+
+
+@app.route('/document/<int:document_id>/revoke', methods=['POST'])
+@jwt_required
+def revoke_collaborator(document_id):
+    doc = Document.query.get(document_id)
+    if not doc:
+        return jsonify({"message": "Document not found!"}), 404
+
+    data = request.get_json()
+    collaborator_email = data['email']
+
+    engine = CollaborationEngine()
+    engine.revoke_collaboration(document_id, collaborator_email)
+
+    return jsonify({"message": f"Collaboration access for {collaborator_email} revoked successfully!"})
+class DocumentVersion(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    document_id = db.Column(db.Integer, db.ForeignKey('document.id'), nullable=False)
+    content = db.Column(db.Text, nullable=False)
+    timestamp = db.Column(db.DateTime, index=True, default=datetime.utcnow)
+    version_number = db.Column(db.Integer, nullable=False)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "document_id": self.document_id,
+            "timestamp": self.timestamp,
+            "version_number": self.version_number,
+            "content": self.content
+        }
+
+
+class VersioningEngine:
+    def __init__(self):
+        pass
+
+    @staticmethod
+    def create_new_version(document_id, new_content):
+        last_version = DocumentVersion.query.filter_by(document_id=document_id).order_by(DocumentVersion.version_number.desc()).first()
+        version_number = last_version.version_number + 1 if last_version else 1
+
+        new_version = DocumentVersion(document_id=document_id, content=new_content, version_number=version_number)
+        db.session.add(new_version)
+        db.session.commit()
+
+    @staticmethod
+    def get_document_version(document_id, version_number):
+        return DocumentVersion.query.filter_by(document_id=document_id, version_number=version_number).first()
+
+    @staticmethod
+    def get_all_versions(document_id):
+        return DocumentVersion.query.filter_by(document_id=document_id).order_by(DocumentVersion.version_number.desc()).all()
+
+
+@app.route('/document/<int:document_id>/versions', methods=['GET'])
+@jwt_required
+def get_all_document_versions(document_id):
+    doc = Document.query.get(document_id)
+    if not doc:
+        return jsonify({"message": "Document not found!"}), 404
+
+    versions = VersioningEngine.get_all_versions(document_id)
+    return jsonify([version.to_dict() for version in versions])
+
+
+@app.route('/document/<int:document_id>/version/<int:version_number>', methods=['GET'])
+@jwt_required
+def get_specific_document_version(document_id, version_number):
+    doc = Document.query.get(document_id)
+    if not doc:
+        return jsonify({"message": "Document not found!"}), 404
+
+    version = VersioningEngine.get_document_version(document_id, version_number)
+    if not version:
+        return jsonify({"message": f"Version {version_number} not found for document {document_id}!"}), 404
+
+    return jsonify(version.to_dict())
+from enum import Enum
+
+class CollaborationPermission(Enum):
+    VIEW = 1
+    EDIT = 2
+    COMMENT = 3
+
+class Collaboration(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    document_id = db.Column(db.Integer, db.ForeignKey('document.id'), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    permission = db.Column(db.Enum(CollaborationPermission), nullable=False)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "document_id": self.document_id,
+            "user_id": self.user_id,
+            "permission": self.permission.name
+        }
+
+class CollaborationEngine:
+    @staticmethod
+    def grant_permission(document_id, user_id, permission):
+        collaboration = Collaboration(document_id=document_id, user_id=user_id, permission=permission)
+        db.session.add(collaboration)
+        db.session.commit()
+
+    @staticmethod
+    def revoke_permission(document_id, user_id):
+        collaboration = Collaboration.query.filter_by(document_id=document_id, user_id=user_id).first()
+        if collaboration:
+            db.session.delete(collaboration)
+            db.session.commit()
+
+    @staticmethod
+    def get_collaborators(document_id):
+        return Collaboration.query.filter_by(document_id=document_id).all()
+
+@app.route('/document/<int:document_id>/collaborate', methods=['POST'])
+@jwt_required
+def add_collaborator(document_id):
+    req_data = request.get_json()
+    user_id = req_data.get('user_id')
+    permission = CollaborationPermission[req_data.get('permission')]
+
+    doc = Document.query.get(document_id)
+    if not doc:
+        return jsonify({"message": "Document not found!"}), 404
+
+    CollaborationEngine.grant_permission(document_id, user_id, permission)
+    return jsonify({"message": "Collaboration permission granted!"}), 200
+
+@app.route('/document/<int:document_id>/collaborate/<int:user_id>', methods=['DELETE'])
+@jwt_required
+def remove_collaborator(document_id, user_id):
+    doc = Document.query.get(document_id)
+    if not doc:
+        return jsonify({"message": "Document not found!"}), 404
+
+    CollaborationEngine.revoke_permission(document_id, user_id)
+    return jsonify({"message": "Collaboration permission revoked!"}), 200
+
+# Import additional libraries
+from flask_mail import Mail, Message
+from itsdangerous import URLSafeTimedSerializer, SignatureExpired
+import random
+import string
+
+# Initialize Flask-Mail
+app.config['MAIL_SERVER'] = 'smtp.example.com'
+app.config['MAIL_PORT'] = 587
+app.config['MAIL_USERNAME'] = 'your_username'
+app.config['MAIL_PASSWORD'] = 'your_password'
+app.config['MAIL_USE_TLS'] = True
+app.config['MAIL_USE_SSL'] = False
+mail = Mail(app)
+
+# Initialize Flask-Serialize
+serializer = URLSafeTimedSerializer(app.config['SECRET_KEY'])
+
+# Generate a random password
+def generate_random_password():
+    password_length = 12
+    characters = string.ascii_letters + string.digits + string.punctuation
+    return ''.join(random.choice(characters) for i in range(password_length))
+
+@app.route('/register', methods=['POST'])
+def register():
+    data = request.get_json()
+    username = data['username']
+    email = data['email']
+    
+    # Check if the email is already registered
+    existing_user = User.query.filter_by(email=email).first()
+    if existing_user:
+        return jsonify({"message": "Email already registered!"}), 400
+    
+    # Generate a random password
+    password = generate_random_password()
+    
+    # Create a new user
+    new_user = User(username=username, email=email)
+    new_user.set_password(password)  # You would need to implement set_password method in your User model
+    
+    db.session.add(new_user)
+    db.session.commit()
+
+    # Send a confirmation email
+    subject = "Welcome to Your App - Registration Confirmation"
+    token = serializer.dumps(email, salt='email-confirm')
+    confirmation_url = f"http://yourapp.com/confirm_email/{token}"
+    
+    message = f"Thank you for registering with Your App. Please click the following link to confirm your email address: {confirmation_url}"
+    
+    msg = Message(subject, sender="your_email@example.com", recipients=[email])
+    msg.body = message
+    mail.send(msg)
+    
+    return jsonify({"message": "Registration successful. Please check your email for confirmation instructions."})
+
+@app.route('/confirm_email/<token>', methods=['GET'])
+def confirm_email(token):
+    try:
+        email = serializer.loads(token, salt='email-confirm', max_age=3600)  # Email confirmation link expires in 1 hour
+        user = User.query.filter_by(email=email).first()
+        
+        if not user:
+            return jsonify({"message": "Invalid confirmation link."}), 400
+        
+        if user.email_confirmed:
+            return jsonify({"message": "Email already confirmed."}), 400
+        
+        user.email_confirmed = True
+        db.session.commit()
+        
+        return jsonify({"message": "Email confirmed successfully!"})
+    except SignatureExpired:
+        return jsonify({"message": "The confirmation link has expired. Please register again."}), 400
+
+# Continue with other points when ready...
+# Define Role and Permission models
+class Role(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(50), unique=True, nullable=False)
+    permissions = db.relationship('Permission', secondary='role_permissions')
+
+class Permission(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(50), unique=True, nullable=False)
+
+class RolePermission(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    role_id = db.Column(db.Integer, db.ForeignKey('role.id'), nullable=False)
+    permission_id = db.Column(db.Integer, db.ForeignKey('permission.id'), nullable=False)
+
+# Create some default roles and permissions
+def create_default_roles_and_permissions():
+    admin_role = Role(name='Admin')
+    user_role = Role(name='User')
+    
+    read_permission = Permission(name='Read')
+    write_permission = Permission(name='Write')
+    
+    admin_role.permissions.append(read_permission)
+    admin_role.permissions.append(write_permission)
+    
+    user_role.permissions.append(read_permission)
+    
+    db.session.add(admin_role)
+    db.session.add(user_role)
+    db.session.add(read_permission)
+    db.session.add(write_permission)
+    
+    db.session.commit()
+
+@app.route('/create_default_roles_permissions', methods=['GET'])
+def create_default_roles_permissions():
+    create_default_roles_and_permissions()
+    return jsonify({"message": "Default roles and permissions created!"})
+
+# Assign roles to users
+@app.route('/assign_role', methods=['POST'])
+def assign_role():
+    data = request.get_json()
+    username = data['username']
+    role_name = data['role']
+    
+    user = User.query.filter_by(username=username).first()
+    if not user:
+        return jsonify({"message": "User not found!"}), 404
+    
+    role = Role.query.filter_by(name=role_name).first()
+    if not role:
+        return jsonify({"message": "Role not found!"}), 404
+    
+    user.role_id = role.id
+    db.session.commit()
+    
+    return jsonify({"message": f"Role '{role_name}' assigned to '{username}' successfully!"})
+
+# Implement role-based access control (e.g., using decorators)
+from functools import wraps
+from flask_jwt_extended import get_jwt_identity
+
+def role_required(role_name):
+    def decorator(fn):
+        @wraps(fn)
+        def wrapper(*args, **kwargs):
+            current_user = User.query.filter_by(username=get_jwt_identity()).first()
+            if not current_user:
+                return jsonify({"message": "User not found!"}), 404
+            
+            if current_user.role.name != role_name:
+                return jsonify({"message": f"Access denied. '{role_name}' role required!"}), 403
+            
+            return fn(*args, **kwargs)
+        return wrapper
+    return decorator
+
+@app.route('/admin_only', methods=['GET'])
+@jwt_required
+@role_required('Admin')
+def admin_only():
+    return jsonify({"message": "This is an admin-only endpoint."})
+
+# Continue with other points when ready...
+# Define the Document model
+class Document(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    title = db.Column(db.String(200), nullable=False)
+    content = db.Column(db.Text, nullable=False)
+    owner_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    timestamp = db.Column(db.DateTime, index=True, default=datetime.utcnow)
+    is_encrypted = db.Column(db.Boolean, default=False)
+
+# Create a new document
+@app.route('/create_document', methods=['POST'])
+@jwt_required
+def create_document():
+    data = request.get_json()
+    title = data['title']
+    content = data['content']
+
+    user = User.query.filter_by(username=get_jwt_identity()).first()
+    new_doc = Document(title=title, content=content, owner_id=user.id)
+    
+    db.session.add(new_doc)
+    db.session.commit()
+    return jsonify({"message": "Document created successfully!"}), 201
+
+# Update a document
+@app.route('/update_document/<int:document_id>', methods=['PUT'])
+@jwt_required
+def update_document(document_id):
+    doc = Document.query.get(document_id)
+    if not doc:
+        return jsonify({"message": "Document not found!"}), 404
+
+    data = request.get_json()
+    doc.title = data['title']
+    doc.content = data['content']
+
+    db.session.commit()
+    return jsonify({"message": "Document updated successfully!"})
+
+# Delete a document
+@app.route('/delete_document/<int:document_id>', methods=['DELETE'])
+@jwt_required
+def delete_document(document_id):
+    doc = Document.query.get(document_id)
+    if not doc:
+        return jsonify({"message": "Document not found!"}), 404
+
+    db.session.delete(doc)
+    db.session.commit()
+    return jsonify({"message": "Document deleted successfully!"})
+
+# Get all documents for the current user
+@app.route('/documents', methods=['GET'])
+@jwt_required
+def get_all_documents():
+    user = User.query.filter_by(username=get_jwt_identity()).first()
+    documents = Document.query.filter_by(owner_id=user.id).all()
+    return jsonify([{"id": doc.id, "title": doc.title} for doc in documents])
+
+# Get a single document by ID
+@app.route('/document/<int:document_id>', methods=['GET'])
+@jwt_required
+def get_single_document(document_id):
+    doc = Document.query.get(document_id)
+    if not doc:
+        return jsonify({"message": "Document not found!"}), 404
+
+    return jsonify({"id": doc.id, "title": doc.title, "content": doc.content, "timestamp": doc.timestamp})
+
+# Continue with other points when ready...
+# Define the Comment model
+class Comment(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    content = db.Column(db.Text, nullable=False)
+    author_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    document_id = db.Column(db.Integer, db.ForeignKey('document.id'), nullable=False)
+    timestamp = db.Column(db.DateTime, index=True, default=datetime.utcnow)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "content": self.content,
+            "author": self.author.username,
+            "timestamp": self.timestamp
+        }
+
+# Get comments for a specific document
+@app.route('/document/<int:document_id>/comments', methods=['GET'])
+@jwt_required
+def get_comments_for_document(document_id):
+    doc = Document.query.get(document_id)
+    if not doc:
+        return jsonify({"message": "Document not found!"}), 404
+
+    comments = Comment.query.filter_by(document_id=document_id).all()
+    return jsonify([comment.to_dict() for comment in comments])
+
+# Add a comment to a document
+@app.route('/document/<int:document_id>/comment', methods=['POST'])
+@jwt_required
+def add_comment_to_document(document_id):
+    doc = Document.query.get(document_id)
+    if not doc:
+        return jsonify({"message": "Document not found!"}), 404
+
+    data = request.get_json()
+    content = data['content']
+
+    user = User.query.filter_by(username=get_jwt_identity()).first()
+    new_comment = Comment(content=content, author_id=user.id, document_id=document_id)
+
+    db.session.add(new_comment)
+    db.session.commit()
+
+    return jsonify({"message": "Comment added successfully!"}), 201
+
+# Delete a comment by ID
+@app.route('/document/comment/<int:comment_id>', methods=['DELETE'])
+@jwt_required
+def delete_comment(comment_id):
+    comment = Comment.query.get(comment_id)
+    if not comment:
+        return jsonify({"message": "Comment not found!"}), 404
+
+    db.session.delete(comment)
+    db.session.commit()
+
+    return jsonify({"message": "Comment deleted successfully!"})
+
+# Continue with other points when ready...
+# Define an Enum for Collaboration Permissions
+from enum import Enum
+
+class CollaborationPermission(Enum):
+    VIEW = 1
+    EDIT = 2
+    COMMENT = 3
+
+# Define the Collaboration model
+class Collaboration(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    document_id = db.Column(db.Integer, db.ForeignKey('document.id'), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    permission = db.Column(db.Enum(CollaborationPermission), nullable=False)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "document_id": self.document_id,
+            "user_id": self.user_id,
+            "permission": self.permission.name
+        }
+
+# Collaboration Engine for granting and revoking permissions
+class CollaborationEngine:
+    @staticmethod
+    def grant_permission(document_id, user_id, permission):
+        collaboration = Collaboration(document_id=document_id, user_id=user_id, permission=permission)
+        db.session.add(collaboration)
+        db.session.commit()
+
+    @staticmethod
+    def revoke_permission(document_id, user_id):
+        collaboration = Collaboration.query.filter_by(document_id=document_id, user_id=user_id).first()
+        if collaboration:
+            db.session.delete(collaboration)
+            db.session.commit()
+
+    @staticmethod
+    def get_collaborators(document_id):
+        return Collaboration.query.filter_by(document_id=document_id).all()
+
+# Grant collaboration permission to a user for a document
+@app.route('/document/<int:document_id>/collaborate', methods=['POST'])
+@jwt_required
+def add_collaborator(document_id):
+    req_data = request.get_json()
+    user_id = req_data.get('user_id')
+    permission = CollaborationPermission[req_data.get('permission')]
+
+    doc = Document.query.get(document_id)
+    if not doc:
+        return jsonify({"message": "Document not found!"}), 404
+
+    CollaborationEngine.grant_permission(document_id, user_id, permission)
+    return jsonify({"message": "Collaboration permission granted!"}), 200
+
+# Revoke collaboration permission for a user for a document
+@app.route('/document/<int:document_id>/collaborate/<int:user_id>', methods=['DELETE'])
+@jwt_required
+def remove_collaborator(document_id, user_id):
+    doc = Document.query.get(document_id)
+    if not doc:
+        return jsonify({"message": "Document not found!"}), 404
+
+    CollaborationEngine.revoke_permission(document_id, user_id)
+    return jsonify({"message": "Collaboration permission revoked!"}), 200
+
+# Continue with other points when ready...
+# Define the Comment model for document comments
+class Comment(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    content = db.Column(db.Text, nullable=False)
+    author_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    document_id = db.Column(db.Integer, db.ForeignKey('document.id'), nullable=False)
+    timestamp = db.Column(db.DateTime, index=True, default=datetime.utcnow)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "content": self.content,
+            "author": self.author.username,
+            "timestamp": self.timestamp
+        }
+
+# Retrieve all comments for a document
+@app.route('/document/<int:document_id>/comments', methods=['GET'])
+@jwt_required
+def get_comments_for_document(document_id):
+    doc = Document.query.get(document_id)
+    if not doc:
+        return jsonify({"message": "Document not found!"}), 404
+
+    comments = Comment.query.filter_by(document_id=document_id).all()
+    return jsonify([comment.to_dict() for comment in comments])
+
+# Add a comment to a document
+@app.route('/document/<int:document_id>/comment', methods=['POST'])
+@jwt_required
+def add_comment_to_document(document_id):
+    doc = Document.query.get(document_id)
+    if not doc:
+        return jsonify({"message": "Document not found!"}), 404
+
+    data = request.get_json()
+    content = data['content']
+
+    user = User.query.filter_by(username=get_jwt_identity()).first()
+    new_comment = Comment(content=content, author_id=user.id, document_id=document_id)
+
+    db.session.add(new_comment)
+    db.session.commit()
+
+    return jsonify({"message": "Comment added successfully!"}), 201
+
+# Delete a comment
+@app.route('/document/comment/<int:comment_id>', methods=['DELETE'])
+@jwt_required
+def delete_comment(comment_id):
+    comment = Comment.query.get(comment_id)
+    if not comment:
+        return jsonify({"message": "Comment not found!"}), 404
+
+    db.session.delete(comment)
+    db.session.commit()
+
+    return jsonify({"message": "Comment deleted successfully!"})
+
+# Continue with other points when ready...
+from enum import Enum
+
+# Define an Enum for collaboration permissions
+class CollaborationPermission(Enum):
+    VIEW = 1
+    EDIT = 2
+    COMMENT = 3
+
+# Define the Collaboration model
+class Collaboration(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    document_id = db.Column(db.Integer, db.ForeignKey('document.id'), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    permission = db.Column(db.Enum(CollaborationPermission), nullable=False)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "document_id": self.document_id,
+            "user_id": self.user_id,
+            "permission": self.permission.name
+        }
+
+# Grant permission for a user to collaborate on a document
+@app.route('/document/<int:document_id>/collaborate', methods=['POST'])
+@jwt_required
+def add_collaborator(document_id):
+    req_data = request.get_json()
+    user_id = req_data.get('user_id')
+    permission = CollaborationPermission[req_data.get('permission')]
+
+    doc = Document.query.get(document_id)
+    if not doc:
+        return jsonify({"message": "Document not found!"}), 404
+
+    CollaborationEngine.grant_permission(document_id, user_id, permission)
+    return jsonify({"message": "Collaboration permission granted!"}), 200
+
+# Revoke collaboration permission for a user
+@app.route('/document/<int:document_id>/collaborate/<int:user_id>', methods=['DELETE'])
+@jwt_required
+def remove_collaborator(document_id, user_id):
+    doc = Document.query.get(document_id)
+    if not doc:
+        return jsonify({"message": "Document not found!"}), 404
+
+    CollaborationEngine.revoke_permission(document_id, user_id)
+    return jsonify({"message": "Collaboration permission revoked!"}), 200
+
+# Continue with other points when ready...
+# Define the DocumentVersion model
+class DocumentVersion(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    document_id = db.Column(db.Integer, db.ForeignKey('document.id'), nullable=False)
+    content = db.Column(db.Text, nullable=False)
+    timestamp = db.Column(db.DateTime, index=True, default=datetime.utcnow)
+    version_number = db.Column(db.Integer, nullable=False)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "document_id": self.document_id,
+            "timestamp": self.timestamp,
+            "version_number": self.version_number,
+            "content": self.content
+        }
+
+# Define the VersioningEngine to manage document versions
+class VersioningEngine:
+    def __init__(self):
+        pass
+
+    @staticmethod
+    def create_new_version(document_id, new_content):
+        last_version = DocumentVersion.query.filter_by(document_id=document_id).order_by(DocumentVersion.version_number.desc()).first()
+        version_number = last_version.version_number + 1 if last_version else 1
+
+        new_version = DocumentVersion(document_id=document_id, content=new_content, version_number=version_number)
+        db.session.add(new_version)
+        db.session.commit()
+
+    @staticmethod
+    def get_document_version(document_id, version_number):
+        return DocumentVersion.query.filter_by(document_id=document_id, version_number=version_number).first()
+
+    @staticmethod
+    def get_all_versions(document_id):
+        return DocumentVersion.query.filter_by(document_id=document_id).order_by(DocumentVersion.version_number.desc()).all()
+
+# Get all versions of a document
+@app.route('/document/<int:document_id>/versions', methods=['GET'])
+@jwt_required
+def get_all_document_versions(document_id):
+    doc = Document.query.get(document_id)
+    if not doc:
+        return jsonify({"message": "Document not found!"}), 404
+
+    versions = VersioningEngine.get_all_versions(document_id)
+    return jsonify([version.to_dict() for version in versions])
+
+# Get a specific version of a document
+@app.route('/document/<int:document_id>/version/<int:version_number>', methods=['GET'])
+@jwt_required
+def get_specific_document_version(document_id, version_number):
+    doc = Document.query.get(document_id)
+    if not doc:
+        return jsonify({"message": "Document not found!"}), 404
+
+    version = VersioningEngine.get_document_version(document_id, version_number)
+    if not version:
+        return jsonify({"message": f"Version {version_number} not found for document {document_id}!"}), 404
+
+    return jsonify(version.to_dict())
+
+# Continue with other points when ready...
+# Define the Comment model
+class Comment(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    content = db.Column(db.Text, nullable=False)
+    author_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    document_id = db.Column(db.Integer, db.ForeignKey('document.id'), nullable=False)
+    timestamp = db.Column(db.DateTime, index=True, default=datetime.utcnow)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "content": self.content,
+            "author": self.author.username,
+            "timestamp": self.timestamp
+        }
+
+# Get all comments for a specific document
+@app.route('/document/<int:document_id>/comments', methods=['GET'])
+@jwt_required
+def get_comments_for_document(document_id):
+    doc = Document.query.get(document_id)
+    if not doc:
+        return jsonify({"message": "Document not found!"}), 404
+
+    comments = Comment.query.filter_by(document_id=document_id).all()
+    return jsonify([comment.to_dict() for comment in comments])
+
+# Add a comment to a document
+@app.route('/document/<int:document_id>/comment', methods=['POST'])
+@jwt_required
+def add_comment_to_document(document_id):
+    doc = Document.query.get(document_id)
+    if not doc:
+        return jsonify({"message": "Document not found!"}), 404
+
+    data = request.get_json()
+    content = data['content']
+
+    user = User.query.filter_by(username=get_jwt_identity()).first()
+    new_comment = Comment(content=content, author_id=user.id, document_id=document_id)
+
+    db.session.add(new_comment)
+    db.session.commit()
+
+    return jsonify({"message": "Comment added successfully!"}), 201
+
+# Delete a comment
+@app.route('/document/comment/<int:comment_id>', methods=['DELETE'])
+@jwt_required
+def delete_comment(comment_id):
+    comment = Comment.query.get(comment_id)
+    if not comment:
+        return jsonify({"message": "Comment not found!"}), 404
+
+    db.session.delete(comment)
+    db.session.commit()
+
+    return jsonify({"message": "Comment deleted successfully!"})
+
+# Continue with other points when ready...
+# Define the CollaborationPermission enum
+from enum import Enum
+
+class CollaborationPermission(Enum):
+    VIEW = 1
+    EDIT = 2
+    COMMENT = 3
+
+# Define the Collaboration model
+class Collaboration(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    document_id = db.Column(db.Integer, db.ForeignKey('document.id'), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    permission = db.Column(db.Enum(CollaborationPermission), nullable=False)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "document_id": self.document_id,
+            "user_id": self.user_id,
+            "permission": self.permission.name
+        }
+
+# Collaboration engine for granting and revoking permissions
+class CollaborationEngine:
+    @staticmethod
+    def grant_permission(document_id, user_id, permission):
+        collaboration = Collaboration(document_id=document_id, user_id=user_id, permission=permission)
+        db.session.add(collaboration)
+        db.session.commit()
+
+    @staticmethod
+    def revoke_permission(document_id, user_id):
+        collaboration = Collaboration.query.filter_by(document_id=document_id, user_id=user_id).first()
+        if collaboration:
+            db.session.delete(collaboration)
+            db.session.commit()
+
+    @staticmethod
+    def get_collaborators(document_id):
+        return Collaboration.query.filter_by(document_id=document_id).all()
+
+# Invite a collaborator to a document
+@app.route('/document/<int:document_id>/invite', methods=['POST'])
+@jwt_required
+def invite_collaborator(document_id):
+    doc = Document.query.get(document_id)
+    if not doc:
+        return jsonify({"message": "Document not found!"}), 404
+
+    data = request.get_json()
+    collaborator_email = data['email']
+    permission = CollaborationPermission[data['permission']]
+
+    # In a real application, you might want to verify the email and user existence.
+    # For simplicity, we assume the email corresponds to an existing user.
+
+    # You can also add more logic here to ensure that the inviting user has the required permission.
+
+    engine = CollaborationEngine()
+    engine.grant_permission(document_id, user_id, permission)
+
+    return jsonify({"message": f"Collaborator {collaborator_email} invited successfully!"})
+
+# Revoke collaboration access for a collaborator
+@app.route('/document/<int:document_id>/revoke', methods=['POST'])
+@jwt_required
+def revoke_collaborator(document_id):
+    doc = Document.query.get(document_id)
+    if not doc:
+        return jsonify({"message": "Document not found!"}), 404
+
+    data = request.get_json()
+    collaborator_email = data['email']
+
+    # You can add more validation here, such as ensuring that the user performing the revocation has the required permission.
+
+    engine = CollaborationEngine()
+    engine.revoke_permission(document_id, user_id)
+
+    return jsonify({"message": f"Collaboration access for {collaborator_email} revoked successfully!"})
+
+# Continue with other points when ready...
+# Define the DocumentVersion model
+class DocumentVersion(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    document_id = db.Column(db.Integer, db.ForeignKey('document.id'), nullable=False)
+    content = db.Column(db.Text, nullable=False)
+    timestamp = db.Column(db.DateTime, index=True, default=datetime.utcnow)
+    version_number = db.Column(db.Integer, nullable=False)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "document_id": self.document_id,
+            "timestamp": self.timestamp,
+            "version_number": self.version_number,
+            "content": self.content
+        }
+
+# Versioning engine for creating and managing document versions
+class VersioningEngine:
+    @staticmethod
+    def create_new_version(document_id, new_content):
+        last_version = DocumentVersion.query.filter_by(document_id=document_id).order_by(DocumentVersion.version_number.desc()).first()
+        version_number = last_version.version_number + 1 if last_version else 1
+
+        new_version = DocumentVersion(document_id=document_id, content=new_content, version_number=version_number)
+        db.session.add(new_version)
+        db.session.commit()
+
+    @staticmethod
+    def get_document_version(document_id, version_number):
+        return DocumentVersion.query.filter_by(document_id=document_id, version_number=version_number).first()
+
+    @staticmethod
+    def get_all_versions(document_id):
+        return DocumentVersion.query.filter_by(document_id=document_id).order_by(DocumentVersion.version_number.desc()).all()
+
+# Get all versions of a document
+@app.route('/document/<int:document_id>/versions', methods=['GET'])
+@jwt_required
+def get_all_document_versions(document_id):
+    doc = Document.query.get(document_id)
+    if not doc:
+        return jsonify({"message": "Document not found!"}), 404
+
+    versions = VersioningEngine.get_all_versions(document_id)
+    return jsonify([version.to_dict() for version in versions])
+
+# Get a specific version of a document
+@app.route('/document/<int:document_id>/version/<int:version_number>', methods=['GET'])
+@jwt_required
+def get_specific_document_version(document_id, version_number):
+    doc = Document.query.get(document_id)
+    if not doc:
+        return jsonify({"message": "Document not found!"}), 404
+
+    version = VersioningEngine.get_document_version(document_id, version_number)
+    if not version:
+        return jsonify({"message": f"Version {version_number} not found for document {document_id}!"}), 404
+
+    return jsonify(version.to_dict())
+
+# Continue with other points when ready...
+# Define an Enum for collaboration permissions
+from enum import Enum
+
+class CollaborationPermission(Enum):
+    VIEW = 1
+    EDIT = 2
+    COMMENT = 3
+
+# Collaboration model to store user permissions on a document
+class Collaboration(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    document_id = db.Column(db.Integer, db.ForeignKey('document.id'), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    permission = db.Column(db.Enum(CollaborationPermission), nullable=False)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "document_id": self.document_id,
+            "user_id": self.user_id,
+            "permission": self.permission.name
+        }
+
+# Collaboration engine for granting and revoking permissions
+class CollaborationEngine:
+    @staticmethod
+    def grant_permission(document_id, user_id, permission):
+        collaboration = Collaboration(document_id=document_id, user_id=user_id, permission=permission)
+        db.session.add(collaboration)
+        db.session.commit()
+
+    @staticmethod
+    def revoke_permission(document_id, user_id):
+        collaboration = Collaboration.query.filter_by(document_id=document_id, user_id=user_id).first()
+        if collaboration:
+            db.session.delete(collaboration)
+            db.session.commit()
+
+    @staticmethod
+    def get_collaborators(document_id):
+        return Collaboration.query.filter_by(document_id=document_id).all()
+
+# Grant collaboration permission to a user on a document
+@app.route('/document/<int:document_id>/collaborate', methods=['POST'])
+@jwt_required
+def add_collaborator(document_id):
+    req_data = request.get_json()
+    user_id = req_data.get('user_id')
+    permission = CollaborationPermission[req_data.get('permission')]
+
+    doc = Document.query.get(document_id)
+    if not doc:
+        return jsonify({"message": "Document not found!"}), 404
+
+    CollaborationEngine.grant_permission(document_id, user_id, permission)
+    return jsonify({"message": "Collaboration permission granted!"}), 200
+
+# Revoke collaboration permission from a user on a document
+@app.route('/document/<int:document_id>/collaborate/<int:user_id>', methods=['DELETE'])
+@jwt_required
+def remove_collaborator(document_id, user_id):
+    doc = Document.query.get(document_id)
+    if not doc:
+        return jsonify({"message": "Document not found!"}), 404
+
+    CollaborationEngine.revoke_permission(document_id, user_id)
+    return jsonify({"message": "Collaboration permission revoked!"}), 200
+
+# Continue with other points when ready...
+# Define an Enum for collaboration permissions (if not defined already)
+from enum import Enum
+
+class CollaborationPermission(Enum):
+    VIEW = 1
+    EDIT = 2
+    COMMENT = 3
+
+# Collaboration model to store user permissions on a document (if not defined already)
+class Collaboration(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    document_id = db.Column(db.Integer, db.ForeignKey('document.id'), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    permission = db.Column(db.Enum(CollaborationPermission), nullable=False)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "document_id": self.document_id,
+            "user_id": self.user_id,
+            "permission": self.permission.name
+        }
+
+# Collaboration engine for granting and revoking permissions (if not defined already)
+class CollaborationEngine:
+    @staticmethod
+    def grant_permission(document_id, user_id, permission):
+        collaboration = Collaboration(document_id=document_id, user_id=user_id, permission=permission)
+        db.session.add(collaboration)
+        db.session.commit()
+
+    @staticmethod
+    def revoke_permission(document_id, user_id):
+        collaboration = Collaboration.query.filter_by(document_id=document_id, user_id=user_id).first()
+        if collaboration:
+            db.session.delete(collaboration)
+            db.session.commit()
+
+    @staticmethod
+    def get_collaborators(document_id):
+        return Collaboration.query.filter_by(document_id=document_id).all()
+
+# View collaboration history for a document
+@app.route('/document/<int:document_id>/collaborate/history', methods=['GET'])
+@jwt_required
+def view_collaboration_history(document_id):
+    doc = Document.query.get(document_id)
+    if not doc:
+        return jsonify({"message": "Document not found!"}), 404
+
+    collaborators = CollaborationEngine.get_collaborators(document_id)
+    collaboration_history = []
+
+    for collaborator in collaborators:
+        user = User.query.get(collaborator.user_id)
+        collaboration_history.append({
+            "user_id": user.id,
+            "username": user.username,
+            "permission": collaborator.permission.name
+        })
+
+    return jsonify({"collaboration_history": collaboration_history}), 200
+
+# Continue with other points when ready...
+# DocumentVersion model to store different versions of a document
+class DocumentVersion(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    document_id = db.Column(db.Integer, db.ForeignKey('document.id'), nullable=False)
+    content = db.Column(db.Text, nullable=False)
+    timestamp = db.Column(db.DateTime, index=True, default=datetime.utcnow)
+    version_number = db.Column(db.Integer, nullable=False)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "document_id": self.document_id,
+            "timestamp": self.timestamp,
+            "version_number": self.version_number,
+            "content": self.content
+        }
+
+# VersioningEngine for managing document versions
+class VersioningEngine:
+    @staticmethod
+    def create_new_version(document_id, new_content):
+        last_version = DocumentVersion.query.filter_by(document_id=document_id).order_by(DocumentVersion.version_number.desc()).first()
+        version_number = last_version.version_number + 1 if last_version else 1
+
+        new_version = DocumentVersion(document_id=document_id, content=new_content, version_number=version_number)
+        db.session.add(new_version)
+        db.session.commit()
+
+    @staticmethod
+    def get_document_version(document_id, version_number):
+        return DocumentVersion.query.filter_by(document_id=document_id, version_number=version_number).first()
+
+    @staticmethod
+    def get_all_versions(document_id):
+        return DocumentVersion.query.filter_by(document_id=document_id).order_by(DocumentVersion.version_number.desc()).all()
+
+# Create a new version of a document
+@app.route('/document/<int:document_id>/versions', methods=['POST'])
+@jwt_required
+def create_document_version(document_id):
+    doc = Document.query.get(document_id)
+    if not doc:
+        return jsonify({"message": "Document not found!"}), 404
+
+    data = request.get_json()
+    new_content = data['content']
+
+    # Ensure the user has permission to create a new version
+    user = User.query.filter_by(username=get_jwt_identity()).first()
+    collaboration = Collaboration.query.filter_by(document_id=document_id, user_id=user.id).first()
+    if not collaboration or collaboration.permission != CollaborationPermission.EDIT:
+        return jsonify({"message": "Permission denied to create a new version!"}), 403
+
+    # Create a new version of the document
+    VersioningEngine.create_new_version(document_id, new_content)
+    return jsonify({"message": "New version created successfully!"}), 201
+
+# View all versions of a document
+@app.route('/document/<int:document_id>/versions', methods=['GET'])
+@jwt_required
+def get_all_document_versions(document_id):
+    doc = Document.query.get(document_id)
+    if not doc:
+        return jsonify({"message": "Document not found!"}), 404
+
+    versions = VersioningEngine.get_all_versions(document_id)
+    return jsonify([version.to_dict() for version in versions]), 200
+
+# View a specific version of a document
+@app.route('/document/<int:document_id>/version/<int:version_number>', methods=['GET'])
+@jwt_required
+def get_specific_document_version(document_id, version_number):
+    doc = Document.query.get(document_id)
+    if not doc:
+        return jsonify({"message": "Document not found!"}), 404
+
+    version = VersioningEngine.get_document_version(document_id, version_number)
+    if not version:
+        return jsonify({"message": f"Version {version_number} not found for document {document_id}!"}), 404
+
+    return jsonify(version.to_dict()), 200
+
+# Continue with other points when ready...
+# Define an enum for collaboration permissions
+from enum import Enum
+
+class CollaborationPermission(Enum):
+    VIEW = 1
+    EDIT = 2
+    COMMENT = 3
+
+# Collaboration model to store user permissions on documents
+class Collaboration(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    document_id = db.Column(db.Integer, db.ForeignKey('document.id'), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    permission = db.Column(db.Enum(CollaborationPermission), nullable=False)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "document_id": self.document_id,
+            "user_id": self.user_id,
+            "permission": self.permission.name
+        }
+
+# CollaborationEngine for managing collaboration permissions
+class CollaborationEngine:
+    @staticmethod
+    def grant_permission(document_id, user_id, permission):
+        collaboration = Collaboration(document_id=document_id, user_id=user_id, permission=permission)
+        db.session.add(collaboration)
+        db.session.commit()
+
+    @staticmethod
+    def revoke_permission(document_id, user_id):
+        collaboration = Collaboration.query.filter_by(document_id=document_id, user_id=user_id).first()
+        if collaboration:
+            db.session.delete(collaboration)
+            db.session.commit()
+
+    @staticmethod
+    def get_collaborators(document_id):
+        return Collaboration.query.filter_by(document_id=document_id).all()
+
+# Grant collaboration permission to a user
+@app.route('/document/<int:document_id>/collaborate', methods=['POST'])
+@jwt_required
+def add_collaborator(document_id):
+    req_data = request.get_json()
+    user_id = req_data.get('user_id')
+    permission = CollaborationPermission[req_data.get('permission')]
+
+    doc = Document.query.get(document_id)
+    if not doc:
+        return jsonify({"message": "Document not found!"}), 404
+
+    # Ensure the user has permission to grant collaboration
+    user = User.query.filter_by(username=get_jwt_identity()).first()
+    collaboration = Collaboration.query.filter_by(document_id=document_id, user_id=user.id).first()
+    if not collaboration or collaboration.permission != CollaborationPermission.EDIT:
+        return jsonify({"message": "Permission denied to grant collaboration!"}), 403
+
+    # Grant collaboration permission to the user
+    CollaborationEngine.grant_permission(document_id, user_id, permission)
+    return jsonify({"message": "Collaboration permission granted!"}), 200
+
+# Revoke collaboration permission from a user
+@app.route('/document/<int:document_id>/collaborate/<int:user_id>', methods=['DELETE'])
+@jwt_required
+def remove_collaborator(document_id, user_id):
+    doc = Document.query.get(document_id)
+    if not doc:
+        return jsonify({"message": "Document not found!"}), 404
+
+    # Ensure the user has permission to revoke collaboration
+    user = User.query.filter_by(username=get_jwt_identity()).first()
+    collaboration = Collaboration.query.filter_by(document_id=document_id, user_id=user.id).first()
+    if not collaboration or collaboration.permission != CollaborationPermission.EDIT:
+        return jsonify({"message": "Permission denied to revoke collaboration!"}), 403
+
+    # Revoke collaboration permission from the user
+    CollaborationEngine.revoke_permission(document_id, user_id)
+    return jsonify({"message": "Collaboration permission revoked!"}), 200
+
+# Continue with other points when ready...
+# Comment model to store document comments
+class Comment(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    content = db.Column(db.Text, nullable=False)
+    author_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    document_id = db.Column(db.Integer, db.ForeignKey('document.id'), nullable=False)
+    timestamp = db.Column(db.DateTime, index=True, default=datetime.utcnow)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "content": self.content,
+            "author": self.author.username,
+            "timestamp": self.timestamp
+        }
+
+# Get comments for a specific document
+@app.route('/document/<int:document_id>/comments', methods=['GET'])
+@jwt_required
+def get_comments_for_document(document_id):
+    doc = Document.query.get(document_id)
+    if not doc:
+        return jsonify({"message": "Document not found!"}), 404
+
+    comments = Comment.query.filter_by(document_id=document_id).all()
+    return jsonify([comment.to_dict() for comment in comments])
+
+# Add a comment to a document
+@app.route('/document/<int:document_id>/comment', methods=['POST'])
+@jwt_required
+def add_comment_to_document(document_id):
+    doc = Document.query.get(document_id)
+    if not doc:
+        return jsonify({"message": "Document not found!"}), 404
+
+    data = request.get_json()
+    content = data['content']
+
+    user = User.query.filter_by(username=get_jwt_identity()).first()
+    new_comment = Comment(content=content, author_id=user.id, document_id=document_id)
+
+    db.session.add(new_comment)
+    db.session.commit()
+
+    return jsonify({"message": "Comment added successfully!"}), 201
+
+# Delete a comment
+@app.route('/document/comment/<int:comment_id>', methods=['DELETE'])
+@jwt_required
+def delete_comment(comment_id):
+    comment = Comment.query.get(comment_id)
+    if not comment:
+        return jsonify({"message": "Comment not found!"}), 404
+
+    # Ensure the user deleting the comment is the author
+    user = User.query.filter_by(username=get_jwt_identity()).first()
+    if comment.author_id != user.id:
+        return jsonify({"message": "Permission denied to delete comment!"}), 403
+
+    db.session.delete(comment)
+    db.session.commit()
+
+    return jsonify({"message": "Comment deleted successfully!"}), 200
+
+# Continue with other points when ready...
+# DocumentVersion model to store document versions
+class DocumentVersion(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    document_id = db.Column(db.Integer, db.ForeignKey('document.id'), nullable=False)
+    content = db.Column(db.Text, nullable=False)
+    timestamp = db.Column(db.DateTime, index=True, default=datetime.utcnow)
+    version_number = db.Column(db.Integer, nullable=False)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "document_id": self.document_id,
+            "timestamp": self.timestamp,
+            "version_number": self.version_number,
+            "content": self.content
+        }
+
+# VersioningEngine to manage document versions
+class VersioningEngine:
+    @staticmethod
+    def create_new_version(document_id, new_content):
+        last_version = DocumentVersion.query.filter_by(document_id=document_id).order_by(DocumentVersion.version_number.desc()).first()
+        version_number = last_version.version_number + 1 if last_version else 1
+
+        new_version = DocumentVersion(document_id=document_id, content=new_content, version_number=version_number)
+        db.session.add(new_version)
+        db.session.commit()
+
+    @staticmethod
+    def get_document_version(document_id, version_number):
+        return DocumentVersion.query.filter_by(document_id=document_id, version_number=version_number).first()
+
+    @staticmethod
+    def get_all_versions(document_id):
+        return DocumentVersion.query.filter_by(document_id=document_id).order_by(DocumentVersion.version_number.desc()).all()
+
+# Get all versions of a document
+@app.route('/document/<int:document_id>/versions', methods=['GET'])
+@jwt_required
+def get_all_document_versions(document_id):
+    doc = Document.query.get(document_id)
+    if not doc:
+        return jsonify({"message": "Document not found!"}), 404
+
+    versions = VersioningEngine.get_all_versions(document_id)
+    return jsonify([version.to_dict() for version in versions])
+
+# Get a specific version of a document
+@app.route('/document/<int:document_id>/version/<int:version_number>', methods=['GET'])
+@jwt_required
+def get_specific_document_version(document_id, version_number):
+    doc = Document.query.get(document_id)
+    if not doc:
+        return jsonify({"message": "Document not found!"}), 404
+
+    version = VersioningEngine.get_document_version(document_id, version_number)
+    if not version:
+        return jsonify({"message": f"Version {version_number} not found for document {document_id}!"}), 404
+
+    return jsonify(version.to_dict())
+
+# Continue with other points when ready...
+# Enum for Collaboration Permissions
+from enum import Enum
+
+class CollaborationPermission(Enum):
+    VIEW = 1
+    EDIT = 2
+    COMMENT = 3
+
+# Collaboration model to store collaboration permissions
+class Collaboration(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    document_id = db.Column(db.Integer, db.ForeignKey('document.id'), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    permission = db.Column(db.Enum(CollaborationPermission), nullable=False)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "document_id": self.document_id,
+            "user_id": self.user_id,
+            "permission": self.permission.name
+        }
+
+# CollaborationEngine to manage collaboration permissions
+class CollaborationEngine:
+    @staticmethod
+    def grant_permission(document_id, user_id, permission):
+        collaboration = Collaboration(document_id=document_id, user_id=user_id, permission=permission)
+        db.session.add(collaboration)
+        db.session.commit()
+
+    @staticmethod
+    def revoke_permission(document_id, user_id):
+        collaboration = Collaboration.query.filter_by(document_id=document_id, user_id=user_id).first()
+        if collaboration:
+            db.session.delete(collaboration)
+            db.session.commit()
+
+    @staticmethod
+    def get_collaborators(document_id):
+        return Collaboration.query.filter_by(document_id=document_id).all()
+
+# Add a collaborator with permission to a document
+@app.route('/document/<int:document_id>/collaborate', methods=['POST'])
+@jwt_required
+def add_collaborator(document_id):
+    req_data = request.get_json()
+    user_id = req_data.get('user_id')
+    permission = CollaborationPermission[req_data.get('permission')]
+
+    doc = Document.query.get(document_id)
+    if not doc:
+        return jsonify({"message": "Document not found!"}), 404
+
+    CollaborationEngine.grant_permission(document_id, user_id, permission)
+    return jsonify({"message": "Collaboration permission granted!"}), 200
+
+# Remove a collaborator's permission from a document
+@app.route('/document/<int:document_id>/collaborate/<int:user_id>', methods=['DELETE'])
+@jwt_required
+def remove_collaborator(document_id, user_id):
+    doc = Document.query.get(document_id)
+    if not doc:
+        return jsonify({"message": "Document not found!"}), 404
+
+    CollaborationEngine.revoke_permission(document_id, user_id)
+    return jsonify({"message": "Collaboration permission revoked!"}), 200
+
+# Continue with other points when ready...
+# DocumentVersion model to store document versions
+class DocumentVersion(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    document_id = db.Column(db.Integer, db.ForeignKey('document.id'), nullable=False)
+    content = db.Column(db.Text, nullable=False)
+    timestamp = db.Column(db.DateTime, index=True, default=datetime.utcnow)
+    version_number = db.Column(db.Integer, nullable=False)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "document_id": self.document_id,
+            "timestamp": self.timestamp,
+            "version_number": self.version_number,
+            "content": self.content
+        }
+
+# VersioningEngine to manage document versions
+class VersioningEngine:
+    @staticmethod
+    def create_new_version(document_id, new_content):
+        last_version = DocumentVersion.query.filter_by(document_id=document_id).order_by(DocumentVersion.version_number.desc()).first()
+        version_number = last_version.version_number + 1 if last_version else 1
+
+        new_version = DocumentVersion(document_id=document_id, content=new_content, version_number=version_number)
+        db.session.add(new_version)
+        db.session.commit()
+
+    @staticmethod
+    def get_document_version(document_id, version_number):
+        return DocumentVersion.query.filter_by(document_id=document_id, version_number=version_number).first()
+
+    @staticmethod
+    def get_all_versions(document_id):
+        return DocumentVersion.query.filter_by(document_id=document_id).order_by(DocumentVersion.version_number.desc()).all()
+
+# Retrieve all versions of a document
+@app.route('/document/<int:document_id>/versions', methods=['GET'])
+@jwt_required
+def get_all_document_versions(document_id):
+    doc = Document.query.get(document_id)
+    if not doc:
+        return jsonify({"message": "Document not found!"}), 404
+
+    versions = VersioningEngine.get_all_versions(document_id)
+    return jsonify([version.to_dict() for version in versions])
+
+# Retrieve a specific version of a document
+@app.route('/document/<int:document_id>/version/<int:version_number>', methods=['GET'])
+@jwt_required
+def get_specific_document_version(document_id, version_number):
+    doc = Document.query.get(document_id)
+    if not doc:
+        return jsonify({"message": "Document not found!"}), 404
+
+    version = VersioningEngine.get_document_version(document_id, version_number)
+    if not version:
+        return jsonify({"message": f"Version {version_number} not found for document {document_id}!"}), 404
+
+    return jsonify(version.to_dict())
+
+# Continue with other points when ready...
+# Enum to define collaboration permission levels
+from enum import Enum
+
+class CollaborationPermission(Enum):
+    VIEW = 1  # View-only permission
+    EDIT = 2  # Edit permission
+    COMMENT = 3  # Comment permission
+
+# Collaboration model to store collaboration permissions
+class Collaboration(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    document_id = db.Column(db.Integer, db.ForeignKey('document.id'), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    permission = db.Column(db.Enum(CollaborationPermission), nullable=False)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "document_id": self.document_id,
+            "user_id": self.user_id,
+            "permission": self.permission.name
+        }
+
+# CollaborationEngine to manage collaboration permissions
+class CollaborationEngine:
+    @staticmethod
+    def grant_permission(document_id, user_id, permission):
+        collaboration = Collaboration(document_id=document_id, user_id=user_id, permission=permission)
+        db.session.add(collaboration)
+        db.session.commit()
+
+    @staticmethod
+    def revoke_permission(document_id, user_id):
+        collaboration = Collaboration.query.filter_by(document_id=document_id, user_id=user_id).first()
+        if collaboration:
+            db.session.delete(collaboration)
+            db.session.commit()
+
+    @staticmethod
+    def get_collaborators(document_id):
+        return Collaboration.query.filter_by(document_id=document_id).all()
+
+# API endpoint to add a collaborator to a document
+@app.route('/document/<int:document_id>/collaborate', methods=['POST'])
+@jwt_required
+def add_collaborator(document_id):
+    req_data = request.get_json()
+    user_id = req_data.get('user_id')
+    permission = CollaborationPermission[req_data.get('permission')]
+
+    doc = Document.query.get(document_id)
+    if not doc:
+        return jsonify({"message": "Document not found!"}), 404
+
+    CollaborationEngine.grant_permission(document_id, user_id, permission)
+    return jsonify({"message": "Collaboration permission granted!"}), 200
+
+# API endpoint to remove a collaborator from a document
+@app.route('/document/<int:document_id>/collaborate/<int:user_id>', methods=['DELETE'])
+@jwt_required
+def remove_collaborator(document_id, user_id):
+    doc = Document.query.get(document_id)
+    if not doc:
+        return jsonify({"message": "Document not found!"}), 404
+
+    CollaborationEngine.revoke_permission(document_id, user_id)
+    return jsonify({"message": "Collaboration permission revoked!"}), 200
+
+# Continue with other points when ready...
+# DocumentVersion model to store document versions
+class DocumentVersion(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    document_id = db.Column(db.Integer, db.ForeignKey('document.id'), nullable=False)
+    content = db.Column(db.Text, nullable=False)
+    timestamp = db.Column(db.DateTime, index=True, default=datetime.utcnow)
+    version_number = db.Column(db.Integer, nullable=False)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "document_id": self.document_id,
+            "timestamp": self.timestamp,
+            "version_number": self.version_number,
+            "content": self.content
+        }
+
+# VersioningEngine to manage document versions
+class VersioningEngine:
+    def __init__(self):
+        pass
+
+    @staticmethod
+    def create_new_version(document_id, new_content):
+        last_version = DocumentVersion.query.filter_by(document_id=document_id).order_by(DocumentVersion.version_number.desc()).first()
+        version_number = last_version.version_number + 1 if last_version else 1
+
+        new_version = DocumentVersion(document_id=document_id, content=new_content, version_number=version_number)
+        db.session.add(new_version)
+        db.session.commit()
+
+    @staticmethod
+    def get_document_version(document_id, version_number):
+        return DocumentVersion.query.filter_by(document_id=document_id, version_number=version_number).first()
+
+    @staticmethod
+    def get_all_versions(document_id):
+        return DocumentVersion.query.filter_by(document_id=document_id).order_by(DocumentVersion.version_number.desc()).all()
+
+# API endpoint to get all versions of a document
+@app.route('/document/<int:document_id>/versions', methods=['GET'])
+@jwt_required
+def get_all_document_versions(document_id):
+    doc = Document.query.get(document_id)
+    if not doc:
+        return jsonify({"message": "Document not found!"}), 404
+
+    versions = VersioningEngine.get_all_versions(document_id)
+    return jsonify([version.to_dict() for version in versions])
+
+# API endpoint to get a specific version of a document
+@app.route('/document/<int:document_id>/version/<int:version_number>', methods=['GET'])
+@jwt_required
+def get_specific_document_version(document_id, version_number):
+    doc = Document.query.get(document_id)
+    if not doc:
+        return jsonify({"message": "Document not found!"}), 404
+
+    version = VersioningEngine.get_document_version(document_id, version_number)
+    if not version:
+        return jsonify({"message": f"Version {version_number} not found for document {document_id}!"}), 404
+
+    return jsonify(version.to_dict())
+
+# Continue with other points when ready...
+# Define an Enum for collaboration permissions
+from enum import Enum
+
+class CollaborationPermission(Enum):
+    VIEW = 1
+    EDIT = 2
+    COMMENT = 3
+
+# Collaboration model to store permissions
+class Collaboration(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    document_id = db.Column(db.Integer, db.ForeignKey('document.id'), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    permission = db.Column(db.Enum(CollaborationPermission), nullable=False)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "document_id": self.document_id,
+            "user_id": self.user_id,
+            "permission": self.permission.name
+        }
+
+# CollaborationEngine to manage collaboration permissions
+class CollaborationEngine:
+    @staticmethod
+    def grant_permission(document_id, user_id, permission):
+        collaboration = Collaboration(document_id=document_id, user_id=user_id, permission=permission)
+        db.session.add(collaboration)
+        db.session.commit()
+
+    @staticmethod
+    def revoke_permission(document_id, user_id):
+        collaboration = Collaboration.query.filter_by(document_id=document_id, user_id=user_id).first()
+        if collaboration:
+            db.session.delete(collaboration)
+            db.session.commit()
+
+    @staticmethod
+    def get_collaborators(document_id):
+        return Collaboration.query.filter_by(document_id=document_id).all()
+
+# API endpoint to add a collaborator with a permission on a document
+@app.route('/document/<int:document_id>/collaborate', methods=['POST'])
+@jwt_required
+def add_collaborator(document_id):
+    req_data = request.get_json()
+    user_id = req_data.get('user_id')
+    permission = CollaborationPermission[req_data.get('permission')]
+
+    doc = Document.query.get(document_id)
+    if not doc:
+        return jsonify({"message": "Document not found!"}), 404
+
+    CollaborationEngine.grant_permission(document_id, user_id, permission)
+    return jsonify({"message": "Collaboration permission granted!"}), 200
+
+# API endpoint to remove a collaborator's permission on a document
+@app.route('/document/<int:document_id>/collaborate/<int:user_id>', methods=['DELETE'])
+@jwt_required
+def remove_collaborator(document_id, user_id):
+    doc = Document.query.get(document_id)
+    if not doc:
+        return jsonify({"message": "Document not found!"}), 404
+
+    CollaborationEngine.revoke_permission(document_id, user_id)
+    return jsonify({"message": "Collaboration permission revoked!"}), 200
+
+# Continue with other points when ready...
+
